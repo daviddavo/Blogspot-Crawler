@@ -9,7 +9,7 @@ import re
 
 import argparse
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import *
 
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -86,7 +86,7 @@ class ProcessPagination:
 
         if future.result():
             self.done += 1
-            self.lastdone = self.remaining[future].url
+            self.lastdone = self.remaining[future]
         else:
             if self.remaining[future].remaining > 0:
                 self.resubmit(self.remaining[future])
@@ -114,8 +114,21 @@ class ProcessPagination:
         return next_page[0]['href'] if next_page else None
 
     def printStatus(self, url, total, current=None):
-        prettyurl = url[len(self.baseurl):]
-        print(f"Done {current}/{total}, {prettyurl}")
+        if url != self.baseurl:
+            url = url[len(self.baseurl):]
+
+        w = os.get_terminal_size().columns
+
+        outstr = f"Done {current}/{total} "
+        donelen = len(outstr)
+        remainingspace = w - len(outstr)-3
+        if len(url) >= remainingspace:
+            outstr += url[:remainingspace] + "..."
+        else:
+            outstr += url
+
+        outstr += " "*(w - len(outstr))
+        print(outstr, end="\r", flush=True)
 
     def submit(self, url: str, remaining_tries=5):
         fname = os.path.join(self.destination, url[len(self.baseurl):].strip('/'))
@@ -154,12 +167,16 @@ class ProcessPagination:
                     self.submit(line.strip())
 
         while self.url and self.running:
-            self.url = self.process_one_page(self.url)
             self.printStatus(self.url, self.total, self.done)
+            self.url = self.process_one_page(self.url)
 
-        while self.running:
-            self.printStatus(self.lastdone, self.total, self.done)
-            time.sleep(1)
+        self.printStatus(self.lastdone.url, self.total, self.done)
+        _, not_done = wait(self.remaining.keys(), .5, ALL_COMPLETED)
+        while self.running and not_done:
+            self.printStatus(self.lastdone.url, self.total, self.done)
+            _, not_done = wait(self.remaining.keys(), .5, ALL_COMPLETED)
+
+        print("\nFinished!")
 
     def stop(self):
         """Stops the executor"""
@@ -178,10 +195,19 @@ def main():
         default="./",
         help="Output folder"
     )
+    parser.add_argument('-t', '--threads',
+        dest='threads',
+        type=int,
+        default=None,
+        help="Number of threads"
+    )
 
     args = parser.parse_args()
 
-    process_pagination = ProcessPagination(args.url, args.destination)
+    process_pagination = ProcessPagination(
+        baseurl=args.url,
+        destination=args.destination,
+        max_workers=args.threads)
 
     def signal_handler(sig, frame):
         # TODO: Add 5 seconds timeout or something like
